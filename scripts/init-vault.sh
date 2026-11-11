@@ -31,7 +31,11 @@ while [ "$#" -gt 0 ]; do
       ;;
     --)
       shift
-      break
+      if [ "$#" -ne 1 ] || [ -n "$DEST" ]; then
+        usage
+      fi
+      DEST="$1"
+      shift
       ;;
     -*)
       echo "Unknown option: $1" >&2
@@ -54,7 +58,7 @@ fi
 
 # Resolve the templates directory. Default: ../templates next to this script.
 if [ -z "$TEMPLATES" ]; then
-  SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+  SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
   TEMPLATES="$SCRIPT_DIR/../templates"
 fi
 
@@ -70,9 +74,19 @@ if [ -e "$DEST" ] && [ ! -d "$DEST" ]; then
   exit 1
 fi
 
-mkdir -p "$DEST"
-DEST=$(CDPATH= cd -- "$DEST" && pwd)
-TEMPLATES=$(CDPATH= cd -- "$TEMPLATES" && pwd)
+mkdir -p -- "$DEST"
+DEST=$(CDPATH='' cd -- "$DEST" && pwd)
+case "$DEST" in
+  /|/bin|/boot|/dev|/etc|/lib|/lib64|/proc|/sbin|/sys|/usr|/usr/*|/var|/System|/System/*|/Library)
+    echo "Refusing to create a vault in a system directory: $DEST" >&2
+    exit 1
+    ;;
+esac
+if [ -n "${HOME:-}" ] && [ "$DEST" = "$(CDPATH='' cd -- "$HOME" 2>/dev/null && pwd)" ]; then
+  echo "Refusing to use your home directory itself as the vault. Pick a subfolder, such as ~/Documents/agent-vault." >&2
+  exit 1
+fi
+TEMPLATES=$(CDPATH='' cd -- "$TEMPLATES" && pwd)
 
 # Starter files at the vault root.
 ROOT_FILES="SCHEMA.md AGENTS.md index.md log.md lint-checklist.md"
@@ -102,13 +116,13 @@ skipped_files=0
 for rel in $DIRS; do
   path="$DEST/$rel"
   if [ ! -d "$path" ]; then
-    mkdir -p "$path"
+    mkdir -p -- "$path"
     created_dirs=$((created_dirs + 1))
     echo "created dir  $rel"
   fi
 done
 
-# Today's date, portable: prefer date -u +%Y-%m-%d, then date +%Y-%m-%d.
+# Today's date in the local timezone.
 TODAY=$(date +%Y-%m-%d 2>/dev/null || true)
 if [ -z "$TODAY" ]; then
   TODAY="YYYY-MM-DD"
@@ -120,7 +134,8 @@ copy_no_clobber() {
   label="$3"
   subst="${4:-}"
 
-  if [ -e "$dst" ]; then
+  # -L catches dangling symlinks, which -e reports as missing.
+  if [ -e "$dst" ] || [ -L "$dst" ]; then
     skipped_files=$((skipped_files + 1))
     echo "skipped      $label (already exists)"
     return 0
@@ -131,45 +146,28 @@ copy_no_clobber() {
     exit 1
   fi
 
-  # Copy via a temp file in the destination directory, then mv. No overwrite: dest must not exist.
-  tmp="$dst.init-vault.tmp.$$"
+  # set -C (noclobber) makes the shell create the file with O_EXCL: it never
+  # replaces an existing file and never writes through a symlink.
   if [ -n "$subst" ]; then
-    # Replace {{DATE}} only. Keep the rest byte-stable aside from that token.
-    # Use awk for portability (no GNU sed assumed).
-    TODAY="$TODAY" awk '
-      {
-        gsub(/\{\{DATE\}\}/, ENVIRON["TODAY"])
-        print
-      }
-    ' "$src" > "$tmp"
+    ( set -C; TODAY="$TODAY" awk '{ gsub(/\{\{DATE\}\}/, ENVIRON["TODAY"]); print }' "$src" > "$dst" ) 2>/dev/null
   else
-    cp "$src" "$tmp"
-  fi
-  mv -n "$tmp" "$dst" 2>/dev/null || {
-    # POSIX mv -n is not universal. If dest appeared, keep it and drop the temp.
-    if [ -e "$dst" ]; then
-      rm -f "$tmp"
+    ( set -C; cat "$src" > "$dst" ) 2>/dev/null
+  fi || {
+    if [ -e "$dst" ] || [ -L "$dst" ]; then
       skipped_files=$((skipped_files + 1))
       echo "skipped      $label (already exists)"
       return 0
     fi
-    mv "$tmp" "$dst"
+    echo "could not create $label" >&2
+    exit 1
   }
-  if [ -f "$tmp" ]; then
-    # mv -n may leave tmp if dest exists on some systems
-    if [ -e "$dst" ] && [ -f "$tmp" ]; then
-      rm -f "$tmp"
-    fi
-  fi
-  if [ -f "$dst" ]; then
-    created_files=$((created_files + 1))
-    echo "created file $label"
-  fi
+  created_files=$((created_files + 1))
+  echo "created file $label"
 }
 
 for name in $ROOT_FILES; do
   subst=""
-  if [ "$name" = "log.md" ]; then
+  if [ "$name" = "log.md" ] || [ "$name" = "index.md" ]; then
     subst="date"
   fi
   copy_no_clobber "$TEMPLATES/$name" "$DEST/$name" "$name" "$subst"
@@ -185,19 +183,10 @@ if [ -d "$TEMPLATES/notes" ]; then
 fi
 
 # A tiny gitignore for junk files only. Do not ignore .obsidian (the human may want to keep settings).
-if [ ! -e "$DEST/.gitignore" ]; then
-  cat > "$DEST/.gitignore" << 'EOF'
-.DS_Store
-Thumbs.db
-*.tmp
-.init-vault.tmp.*
-EOF
-  created_files=$((created_files + 1))
-  echo "created file .gitignore"
-else
-  skipped_files=$((skipped_files + 1))
-  echo "skipped      .gitignore (already exists)"
-fi
+GITIGNORE_TMP=$(mktemp)
+printf '%s\n' .DS_Store Thumbs.db '*.tmp' > "$GITIGNORE_TMP"
+copy_no_clobber "$GITIGNORE_TMP" "$DEST/.gitignore" ".gitignore" ""
+rm -f "$GITIGNORE_TMP"
 
 echo
 echo "Vault:    $DEST"

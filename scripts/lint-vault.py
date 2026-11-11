@@ -81,8 +81,19 @@ def parse_today(value: str | None) -> dt.date:
     return dt.date.today()
 
 
+def parse_date(value: str) -> dt.date | None:
+    """Return a date for a real YYYY-MM-DD value, or None (also for 2026-13-45 or 2026-02-30)."""
+    if not DATE_RE.match(value):
+        return None
+    try:
+        return dt.date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def split_frontmatter(text: str) -> tuple[dict[str, str] | None, str]:
     """Return (fields, body). fields is None when no opening YAML frontmatter is present."""
+    text = text.removeprefix("\ufeff")
     if not text.startswith("---"):
         return None, text
     lines = text.splitlines()
@@ -129,13 +140,15 @@ def strip_code(text: str) -> str:
         if fence is None:
             out.append(line)
     cleaned = "\n".join(out)
-    cleaned = re.sub(r"`[^`]*`", "", cleaned)
+    cleaned = re.sub(r"`[^`\n]*`", "", cleaned)
     return cleaned
 
 
 def iter_markdown(vault: Path) -> list[Path]:
     files = []
     for path in sorted(vault.rglob("*.md")):
+        if path.is_symlink():
+            continue
         rel_parts = path.relative_to(vault).parts
         if any(part in SKIP_DIRS or part.startswith(".") for part in rel_parts[:-1]):
             continue
@@ -163,6 +176,20 @@ def page_targets(vault: Path, files: list[Path]) -> dict[str, Path]:
         for key in keys:
             mapping.setdefault(key, path)
     return mapping
+
+
+def attachment_targets(vault: Path) -> set[str]:
+    """Lowercased names and vault-relative paths of non-markdown files, for ![[image.png]] and [[file.pdf]]."""
+    names: set[str] = set()
+    for path in vault.rglob("*"):
+        if path.is_symlink() or not path.is_file() or path.suffix.lower() == ".md":
+            continue
+        rel = path.relative_to(vault)
+        if any(part in SKIP_DIRS or part.startswith(".") for part in rel.parts[:-1]):
+            continue
+        names.add(path.name.lower())
+        names.add(rel.as_posix().lower())
+    return names
 
 
 def normalize_link(raw: str) -> str:
@@ -201,6 +228,7 @@ def lint(vault: Path, today: dt.date, stale_days: int | None) -> list[str]:
     issues: list[str] = []
     files = iter_markdown(vault)
     targets = page_targets(vault, files)
+    attachments = attachment_targets(vault)
 
     for path in files:
         rel = path.relative_to(vault).as_posix()
@@ -231,25 +259,29 @@ def lint(vault: Path, today: dt.date, stale_days: int | None) -> list[str]:
                     )
                 for date_key in ("created", "updated", "review_after"):
                     value = (fields.get(date_key) or "").strip()
-                    if value and not DATE_RE.match(value):
-                        issues.append(f"frontmatter: {rel} field {date_key} is not YYYY-MM-DD ({value!r})")
+                    if value and parse_date(value) is None:
+                        issues.append(f"frontmatter: {rel} field {date_key} is not a real YYYY-MM-DD date ({value!r})")
                 status_eff = status or default_status(path, vault) or "current"
                 review = (fields.get("review_after") or "").strip()
-                if status_eff == "current" and DATE_RE.match(review):
-                    review_date = dt.date.fromisoformat(review)
+                review_date = parse_date(review)
+                if status_eff == "current" and review_date is not None:
                     if review_date < today:
                         issues.append(
                             f"stale: {rel} is current and review_after {review} is in the past"
                         )
                 if stale_days is not None and status_eff == "current":
                     updated = (fields.get("updated") or "").strip()
-                    if DATE_RE.match(updated):
-                        updated_date = dt.date.fromisoformat(updated)
+                    updated_date = parse_date(updated)
+                    if updated_date is not None:
                         age = (today - updated_date).days
                         if age > stale_days:
                             issues.append(
                                 f"stale: {rel} is current and updated {updated} is {age} days old (threshold {stale_days})"
                             )
+
+        # raw/ is append-once, so do not report wikilinks there (they cannot be "fixed").
+        if path.relative_to(vault).parts[0] == "raw":
+            continue
 
         searchable = strip_code(body if fields is not None else text)
         for match in WIKILINK_RE.finditer(searchable):
@@ -260,7 +292,8 @@ def lint(vault: Path, today: dt.date, stale_days: int | None) -> list[str]:
             if not target.endswith(".md"):
                 keys.add(target + ".md")
                 keys.add((target + ".md").lower())
-            if not any(key in targets for key in keys):
+            att_keys = {target.lower(), Path(target).name.lower()}
+            if not any(key in targets for key in keys) and not any(k in attachments for k in att_keys):
                 issues.append(f"broken-wikilink: {rel} points at [[{target}]] (no matching page)")
 
     return issues

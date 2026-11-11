@@ -43,6 +43,7 @@ supersedes:
 superseded_by:
 confidence: medium    # high | medium | low
 contested: false
+contradictions: []
 tags: []
 sources: []
 ---

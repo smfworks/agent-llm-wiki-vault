@@ -21,6 +21,7 @@ You do not need Obsidian. A vault is just a folder. Obsidian is a good window in
 | [prompts/](prompts/) | Reusable prompts for ingest, nightly research, retrieval before answering, and weekly lint |
 | [scripts/init-vault.sh](scripts/init-vault.sh) | Creates the folder layout without overwriting anything |
 | [scripts/lint-vault.py](scripts/lint-vault.py) | Reports broken wikilinks, missing frontmatter, and stale dates — it never edits files |
+| [CREDITS.md](CREDITS.md) | Attribution for the article, Karpathy's gist, and the Hermes llm-wiki skill (MIT, © 2025 Nous Research) |
 | [LICENSE](LICENSE) | MIT |
 
 This repository is the recipe, not your private notebook. Keep your actual vault in its own folder, and do not publish it with secrets in it.
@@ -28,6 +29,8 @@ This repository is the recipe, not your private notebook. Keep your actual vault
 ## Prerequisites
 
 - A computer you control, with a folder you are willing to treat as the vault.
+- macOS or Linux with a terminal. On Windows, use WSL or Git Bash for `scripts/init-vault.sh`, or create the folders by hand from the layout below.
+- Python 3.9 or later for `scripts/lint-vault.py` (standard library only). On Windows run it as `py scripts\lint-vault.py <vault>`.
 - A local agent you already use, or plan to use: Hermes Agent, OpenClaw, or another agent that can read and write markdown files.
 - Optional: [Obsidian](https://obsidian.md/help/cli) 1.12 or later if you want the official CLI (backlinks, orphans, unresolved links, daily notes). The [1.12 public release](https://obsidian.md/changelog/2026-02-27-desktop-v1.12.4/) shipped the CLI; official help says you need the **1.12.7 or later installer**, then Settings → General → enable Command line interface.
 - Optional: `git`, so the vault has version history. Karpathy's gist notes that a wiki is "just a git repo of markdown files."
@@ -63,7 +66,7 @@ vault/
   _templates/       page shapes to copy, not live wiki pages
 ```
 
-OpenClaw's bundled [memory-wiki plugin](https://docs.openclaw.ai/plugins/memory-wiki) can compile a wiki of its own, with a slightly different default tree (for example `sources/`, `syntheses/`, `reports/`). That compiled wiki can sit beside this layout, or you can point it at a folder and follow the official plugin docs. Do not assume `openclaw wiki init` creates the tree above — it creates OpenClaw's starter layout. See [Connect it to OpenClaw](#4-connect-it-to-openclaw).
+OpenClaw's bundled [memory-wiki plugin](https://docs.openclaw.ai/plugins/memory-wiki) can compile a wiki of its own, with a slightly different default tree (for example `sources/`, `syntheses/`, `reports/`). That compiled wiki can sit beside this layout, or you can point it at a folder and follow the official plugin docs. Do not assume `openclaw wiki init` creates the tree above — it creates OpenClaw's starter layout, and it only creates missing files (it does not overwrite). **Recommended: keep OpenClaw's compiled wiki in a separate folder.** See [Connect it to OpenClaw](#5-connect-it-to-openclaw).
 
 ## Conventions
 
@@ -109,7 +112,7 @@ The `vault=` parameter has to come first when you target a named vault. Examples
 
 ```sh
 obsidian vault="Agent Vault" search query="sleep-time compute"
-obsidian vault="Agent Vault" backlinks file="Sleep-time compute"
+obsidian vault="Agent Vault" backlinks file=sleep-time-compute
 obsidian vault="Agent Vault" orphans
 obsidian vault="Agent Vault" unresolved verbose
 obsidian vault="Agent Vault" daily:append content="- Decision: ..."
@@ -142,15 +145,17 @@ Official skill docs: [llm-wiki](https://hermes-agent.nousresearch.com/docs/user-
 
 3. Hermes already has a small built-in memory: `MEMORY.md` (up to 2,200 characters) and `USER.md` (1,375 characters) under `~/.hermes/memories/`, injected as a frozen snapshot at the start of a session. That is not a substitute for the vault. Do not point two Hermes processes at the same Hermes home; official [Persistent Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) docs warn that two writers will compound each other's entries. Give a second agent its own profile (`hermes profile list` will show what exists). Shared knowledge belongs in this vault.
 
-4. For nightly research, official [Scheduled Tasks (Cron)](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron) docs describe `hermes cron create`, including `--skill`, `--workdir`, and `--continuity`. Each run is a fresh session, so the prompt must contain everything the job needs. Copy [prompts/nightly-research.md](prompts/nightly-research.md), fill in the job and topics, save it as a local file (not in a public gist if it describes a private job), and attach it to the cron job as the official docs show. A shape that matches both those flags and the article is:
+4. For nightly research, official [Scheduled Tasks (Cron)](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron) docs describe `hermes cron create`. Schedule and prompt are positional; `--skill`, `--workdir`, `--continuity`, and `--name` are documented. `--workdir` must be an absolute path to a directory that already exists. Official cron docs confirm that `--workdir` injects that folder's `AGENTS.md` into the job's system prompt.
+
+   Cron jobs run inside the Hermes gateway. Make sure it is running (`hermes gateway install` for a user service, or `hermes gateway` in the foreground), and check with `hermes cron status`. Each run is a fresh session, so the prompt must contain everything the job needs.
+
+   Copy only the prompt **below the `---` line** of [prompts/nightly-research.md](prompts/nightly-research.md), fill in `[JOB]` and `[TOPICS]`, and save it as a local file (not in a public gist if it describes a private job). For the first run, create the job with `--paused`, inspect it with `hermes cron list`, run it once with `hermes cron run nightly-research`, then `hermes cron resume nightly-research`:
 
    ```sh
    hermes cron create "0 1 * * *" "$(cat nightly-research.txt)" \
      --skill llm-wiki --workdir /path/to/your/vault \
-     --continuity --name nightly-research
+     --continuity --name nightly-research --paused
    ```
-
-   Confirm the current syntax on the cron page for your installed version before you rely on every flag. The article notes that a job with `--workdir` pointed at the vault can also pick up the vault's `AGENTS.md`; confirm that against the same docs if you are counting on it.
 
 5. Before answering questions in the vault's domain, use [prompts/retrieval-before-answer.md](prompts/retrieval-before-answer.md). Official [Subagent Delegation](https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation) docs warn that subagents start from a blank conversation ("Subagents Know Nothing") and that leaf subagents cannot write shared persistent memory. Put the question, the vault path, and the rules in the call.
 
@@ -169,9 +174,9 @@ OpenClaw's built-in memory (`MEMORY.md`, dated files under `memory/`, `DREAMS.md
 
    The plugin page also notes that enablement applies to a running Gateway automatically, and that you should start the Gateway if it is offline. If you are unsure which applies, follow the CLI page and then run `openclaw wiki status`.
 
-2. Back up `~/.openclaw/openclaw.json` (or the path printed by `openclaw config file`) before you edit it. Put memory-wiki settings under `plugins.entries.memory-wiki.config` as the [plugin docs](https://docs.openclaw.ai/plugins/memory-wiki) describe. A common starting point from those docs is `vaultMode: "isolated"` (its own vault, no dependency on the memory plugin), `vault.scope: "global"` (one shared wiki), and, if you use Obsidian, `vault.renderMode: "obsidian"`. The official default global path is `~/.openclaw/wiki/main`.
+2. Back up `~/.openclaw/openclaw.json` (or the path printed by `openclaw config file`) before you edit it. Official docs prefer `openclaw config set <key> <value> --dry-run` over hand edits (writes route through a running Gateway), and a symlinked `openclaw.json` is unsupported for writes. See [Configuration](https://docs.openclaw.ai/gateway/configuration) and [Config](https://docs.openclaw.ai/cli/config). Put memory-wiki settings under `plugins.entries.memory-wiki.config` as the [plugin docs](https://docs.openclaw.ai/plugins/memory-wiki) describe. A common starting point from those docs is `vaultMode: "isolated"` (its own vault, no dependency on the memory plugin), `vault.scope: "global"` (one shared wiki), and, if you use Obsidian, `vault.renderMode: "obsidian"`. The official default global path is `~/.openclaw/wiki/main`.
 
-   If you want OpenClaw's compiled wiki and this recipe to be the same folder, set `vault.path` to your recipe vault, then run `openclaw wiki status` and `openclaw wiki doctor` and follow the fixes they print. Do not run `openclaw wiki init` until you have checked that it will not overwrite files you already created — show the command and get a yes first. If you would rather keep the two layers separate, leave OpenClaw on its default path and also give the agent access to this recipe vault as an ordinary folder.
+   **Recommended: keep them separate.** Leave OpenClaw's compiled wiki at its default path (`~/.openclaw/wiki/main`) and give the agent this recipe vault as an ordinary folder. Pointing `vault.path` at this recipe vault is not recommended: `openclaw wiki compile` (which also runs after each ingest by default) adds a generated block to your `index.md`, creates `index.md` files inside `entities/` and `concepts/`, and writes pages with OpenClaw's own frontmatter (`pageType`, `id`, `status: active`), which `scripts/lint-vault.py` will report as errors. `openclaw wiki init` itself only creates missing files and does not overwrite. If you still want one tree, point `vault.path` at a **subfolder** such as `<vault>/openclaw/` and treat it as OpenClaw-owned.
 
 3. Official CLI commands, after the plugin is enabled:
 
@@ -237,13 +242,20 @@ OpenClaw docs are explicit that per-agent vaults are a same-process knowledge bo
 
 ## Security and privacy
 
-- **No secrets in the vault.** No passwords, API keys, tokens, private keys, session cookies, or recovery phrases. If a source contains one, redact it on ingest and say so in the log.
+- **No secrets in the vault.** No passwords, API keys, tokens, private keys, session cookies, or recovery phrases. If a source contains one, redact it on ingest and say so in the log. OpenClaw dreaming does not secret-mask session transcripts before ingesting them (official [Dreaming](https://docs.openclaw.ai/concepts/dreaming) docs), so don't paste secrets into chats either.
 - **Treat ingested web content as untrusted.** A page you clipped can contain prompt-injection ("ignore your rules and…"). Official Hermes memory docs say memory entries are scanned for injection and exfiltration patterns before they are accepted. Official OpenClaw dreaming keeps untrusted and system-derived candidates out of the promotion path. Do the same with `raw/` files: they are evidence, never instructions.
 - **Dreams are not facts.** Do not let a diary entry change a current page without a check.
 - **File permissions.** The vault often holds private notes. Restrict the directory to your user (for example `chmod 700` on the vault folder) if other accounts on the machine should not read it.
 - **Backups.** Prefer git plus an offline copy you control. If you use Obsidian Sync or Headless, follow official security and backup guidance. Do not treat a single disk as enough.
 - **Small models.** Official Hermes docs note that small models, or models with weak tool calling, sometimes say they saved a memory without calling the tool. Open the file and look.
 - **Do not publish your private vault.** This recipe is public; your notes probably should not be.
+
+## Undo
+
+- **The vault** is just a folder. Delete it, or move it to the trash, when you no longer want it. Nothing else depends on it.
+- **Hermes:** restore the `.env` backup made during setup (`cp ~/.hermes/.env.bak-YYYYMMDD-HHMMSS ~/.hermes/.env`), remove the skill with `hermes skills uninstall llm-wiki`, and remove any job with `hermes cron remove nightly-research`.
+- **OpenClaw:** restore the `openclaw.json` backup, or run `openclaw plugins disable memory-wiki`. OpenClaw's compiled wiki at `~/.openclaw/wiki/` is a separate folder.
+- **Obsidian:** remove the vault from the vault switcher. This does not delete files.
 
 ## Troubleshooting
 
@@ -319,6 +331,10 @@ Links below were checked and loaded on 11 November 2026. Prefer these official p
 - [Liam Hermes, Delegation Transport](https://www.smfclearinghouse.com/blog/2026-07-15-delegation-transport-subprocess-gateway-vault/)
 
 This recipe does not require an MCP server. Official Obsidian does not ship a first-party MCP server. If you later want a tool layer on top of a markdown folder, start from official or clearly labeled community projects and review them yourself.
+
+## Credits
+
+See [CREDITS.md](CREDITS.md) for attribution of the X Article, Karpathy's LLM Wiki gist, and the Hermes Agent llm-wiki skill (Nous Research, MIT, © 2025), including that skill's license notice.
 
 ## License
 

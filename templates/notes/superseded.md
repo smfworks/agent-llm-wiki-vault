@@ -9,6 +9,7 @@ supersedes:
 superseded_by: "[[example-page]]"
 confidence: medium
 contested: false
+contradictions: []
 tags: [entity]
 sources: []
 ---
